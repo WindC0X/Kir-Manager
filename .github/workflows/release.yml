@@ -11,7 +11,7 @@ on:
         required: false
         default: ''
       target_commitish:
-        description: '当 tag 不存在时，从哪个分支/sha 创建 tag（默认 main）'
+        description: '从哪个分支/sha 构建并（如 tag 不存在）创建 tag（默认 main）'
         required: false
         default: 'main'
 
@@ -37,8 +37,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          # 手动触发且填写了 tag 时，按 tag checkout；否则按触发事件的 ref checkout
-          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag != '' && github.event.inputs.tag || github.ref }}
+          # ✅ 关键修复：
+          # - push tag：github.ref 本身就是 refs/tags/vX
+          # - workflow_dispatch：永远 checkout target_commitish（不要 checkout tag）
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.target_commitish || github.ref }}
+          fetch-depth: 0
 
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -62,34 +65,43 @@ jobs:
       - name: Build
         run: wails build -platform ${{ matrix.platform }} -o ${{ matrix.output }}
 
-      # ✅ 关键：macOS 产物是 .app 包，必须打包，否则你 path 指向的“裸二进制”不存在
-      - name: Package (macOS)
+      - name: Package (macOS zip + dmg)
         if: runner.os == 'macOS'
         run: |
           set -euxo pipefail
+          mkdir -p build/dist
           ls -la build/bin
-          APP=$(ls -d build/bin/*.app | head -n 1)
-          echo "Packaging $APP"
-          ditto -c -k --sequesterRsrc --keepParent "$APP" "build/bin/${{ matrix.output }}.zip"
 
-      - name: Package (Linux)
+          APP=$(ls -d build/bin/*.app | head -n 1)
+          echo "Found app: $APP"
+
+          # 1) zip（最通用）
+          ditto -c -k --sequesterRsrc --keepParent "$APP" "build/dist/${{ matrix.output }}.zip"
+
+          # 2) dmg（未签名/未公证也能生成，但用户可能仍会遇到 Gatekeeper 提示）
+          brew install create-dmg
+          rm -rf build/dmg && mkdir -p build/dmg
+          cp -R "$APP" build/dmg/
+          create-dmg "build/dist/${{ matrix.output }}.dmg" build/dmg
+
+      - name: Package (Linux tar.gz)
         if: runner.os == 'Linux'
         run: |
           set -euxo pipefail
+          mkdir -p build/dist
           ls -la build/bin
           chmod +x "build/bin/${{ matrix.output }}"
-          tar -C build/bin -czf "build/bin/${{ matrix.output }}.tar.gz" "${{ matrix.output }}"
+          tar -C build/bin -czf "build/dist/${{ matrix.output }}.tar.gz" "${{ matrix.output }}"
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.output }}
-          path: build/bin/${{ matrix.output }}.*
+          path: build/dist/${{ matrix.output }}.*
 
   release:
     needs: build
     runs-on: ubuntu-latest
-    # tag push 自动发；手动触发且填写了 tag 才发
     if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && github.event.inputs.tag != '')
 
     steps:
