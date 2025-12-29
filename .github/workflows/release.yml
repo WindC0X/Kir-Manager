@@ -21,6 +21,7 @@ permissions:
 jobs:
   build:
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: macos-latest
@@ -61,11 +62,29 @@ jobs:
       - name: Build
         run: wails build -platform ${{ matrix.platform }} -o ${{ matrix.output }}
 
+      # ✅ 关键：macOS 产物是 .app 包，必须打包，否则你 path 指向的“裸二进制”不存在
+      - name: Package (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          set -euxo pipefail
+          ls -la build/bin
+          APP=$(ls -d build/bin/*.app | head -n 1)
+          echo "Packaging $APP"
+          ditto -c -k --sequesterRsrc --keepParent "$APP" "build/bin/${{ matrix.output }}.zip"
+
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          set -euxo pipefail
+          ls -la build/bin
+          chmod +x "build/bin/${{ matrix.output }}"
+          tar -C build/bin -czf "build/bin/${{ matrix.output }}.tar.gz" "${{ matrix.output }}"
+
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.output }}
-          path: build/bin/${{ matrix.output }}
+          path: build/bin/${{ matrix.output }}.*
 
   release:
     needs: build
